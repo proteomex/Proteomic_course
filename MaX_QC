@@ -1,5 +1,5 @@
 #Perform quality assessment on MaxQuant output
-#install.packages("PTXQC")
+install.packages("PTXQC")
 library(PTXQC)
 require(yaml)
 require(methods)
