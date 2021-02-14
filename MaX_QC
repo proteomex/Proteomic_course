@@ -1,0 +1,21 @@
+#Perform quality assessment on MaxQuant output
+#install.packages("PTXQC")
+library(PTXQC)
+require(yaml)
+require(methods)
+
+#Copy the mqpar.xml file into the txt folder
+#Set the txt folder as your working directory
+
+txt_folder = "C:/Users/----/combined/txt"
+#mztab_file = "C:/Users/------/combined/txt/mzTab.mzTab"
+
+createReport(
+  txt_folder = txt_folder,
+  mztab_file = NULL,
+  yaml_obj = list(),
+  report_filenames = NULL,
+  enable_log = FALSE
+)
+
+# Done
