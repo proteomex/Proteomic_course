@@ -7,6 +7,7 @@ require(methods)
 #Copy the mqpar.xml file into the txt folder
 #Set the txt folder as your working directory
 
+# Use either the txt folder or the mzTab.mzTab file. Do not use the two at once!
 txt_folder = "C:/Users/----/combined/txt"
 #mztab_file = "C:/Users/------/combined/txt/mzTab.mzTab"
 
