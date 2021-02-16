@@ -1,0 +1,257 @@
+
+#title: "Tutorial of MSstatsTMT - Feb 16"
+#subtitle: "Input to MSstatsTMT: PSM data from MaxQuant"
+#author: "Steve Ayobahan"
+#date: "15/02/2021"
+
+# Objective
+
+# Make annotation file, based on experimental design
+# Preprocessing steps to make required input format for MSstatsTMT from output of MaxQuant
+# Global median normalization between channels
+# Protein summarization
+# Local protein-level normalization with reference channel.
+# Statistical modeling and inference
+
+#***
+  # Data
+  
+  # An experiment with pride identifier PXD019111. The mixtures were measured by TMT 6-plexes.
+  # the peptide quantification data of controlled mixtures, processed by MaxQuant.
+  # (Experimental_design
+  
+  
+#  ***
+  
+  # 1. Load MSstatsTMT
+  
+  #Load MSstatsTMT first. Then you are ready to start MSstatsTMT. 
+
+library (MSstatsTMT)
+library(dplyr)
+library(tidyr)
+
+# Read in MaxQuant files
+proteinGroups_T3 <- read.table("proteinGroups.txt", sep="\t", header=TRUE)
+head(proteinGroups_T3)
+
+evidence_T3 <- read.table("evidence.txt", sep="\t", header=TRUE)
+head(evidence_T3)
+
+# Users should make this annotation file. It is not the output from MaxQuant.
+annotation_T3 <- read.csv(file="Annotation7.csv", header=TRUE)
+head(annotation_T3)
+
+#Convert MaxQuant output into the required input format for MSstatsTMT.
+?MaxQtoMSstatsTMTFormat
+
+input.mxq_T3 <- MaxQtoMSstatsTMTFormat(
+  evidence_T3,
+  proteinGroups_T3,
+  annotation_T3,
+  which.proteinid = "Leading.proteins",
+  rmProt_Only.identified.by.site = F,
+  useUniquePeptide = TRUE,
+  rmPSM_withMissing_withinRun = T,
+  rmPSM_withfewMea_withinRun = T,
+  rmProtein_with1Feature = T,
+  summaryforMultipleRows = sum
+)
+
+#Check the length of the remain proteins
+
+#We assume missing values are censored and then impute the missing values. 
+#Protein-level summarization from peptide level quantification are performed. 
+#After all, global median normalization on peptide level data and normalization between 
+#MS runs using reference channels will be implemented
+
+?proteinSummarization
+
+# use MSstats for protein summarization
+quant.msstats.mkuq_T3 <- proteinSummarization(input.mxq_T3,
+                                           method = "msstats",
+                                           global_norm = T,
+                                           reference_norm = F,
+                                           remove_norm_channel = F,
+                                           remove_empty_channel = F,
+                                           MBimpute = T,
+                                           maxQuantileforCensored = NULL)
+
+# Hence, this experiment, do not have a reference channel,
+# create a  reference channel using the average signal over all the three channels
+
+ref.channel <- quant.msstats.mkuq_T3 %>% 
+  group_by(Protein, Mixture, TechRepMixture, Run) %>% 
+  summarise(Abundance = mean(Abundance, na.rm = TRUE))
+ref.channel$Channel <- "channel.4"
+ref.channel$Condition <- "Norm"
+ref.channel$BioReplicate <- "Norm"
+quant.msstats.mkuq_T3 <- rbind(as.data.frame(quant.msstats.mkuq_T3),
+                            as.data.frame(ref.channel[,colnames(quant.msstats.mkuq_T3)])
+)
+
+?proteinSummarization
+# perform the reference channel-based normalization implemented in MSstatsTMT
+#To remove the batch effects between runs
+quant.msstats.mkuq_T3 <- MSstatsTMT:::.protein.normalization(quant.msstats.mkuq_T3)
+
+# Using the respective sample identifiers to group the identified proteins 
+normMaq_T3 <- aggregate(quant.msstats.mkuq_T3$Abundance, by=list(Protein=quant.msstats.mkuq_T3$Protein, BioReplicate=quant.msstats.mkuq_T3$BioReplicate), FUN=mean)
+colnames(normMaq_T3)[3] <- "abundance"
+head(normMaq_T3)
+write.csv(normMaq_T3, file='normMaq_Condition_T3.csv', row.names = FALSE)
+head(normMaq_T3)
+
+#Boxplot
+boxplot(abundance ~ BioReplicate, data = normMaq_T3, xlab = "Treatment",
+        ylab = "Intensity", main = "T3 - Normalized Abundance (ZE)")
+
+
+#Density plot
+# Change density plot line colors by groups
+library(ggplot2)
+df <-  normMaq_T3
+mu <- ddply(df, "BioReplicate", summarise, grp.mean=mean(abundance))
+tail(mu)
+
+ggplot(df, aes(x=abundance, color=BioReplicate)) +
+  geom_density()
+# Add mean lines
+p<-ggplot(df, aes(x=abundance, color=BioReplicate)) +
+  geom_density()+
+  geom_vline(data=mu, aes(xintercept=grp.mean, color=BioReplicate),
+             linetype="dashed")
+p
+
+# Histogram with density plot
+ggplot(df, aes(x=abundance)) + 
+  geom_histogram(aes(y=..density..), colour="black", fill="blue")+
+  geom_density(alpha=.2, fill="#FF6666") 
+# Color by groups
+ggplot(df, aes(x=abundance, color=BioReplicate, fill=BioReplicate)) + 
+  geom_histogram(aes(y=..density..), size=1, alpha=.2, binwidth=.5,
+                 position="identity")+
+  geom_density(alpha=.1, fill="light yellow") 
+
+#Reshape the data
+head(normMaq_T3)
+x <- normMaq_T3
+#Remove Norm channel
+x <- x[!x$BioReplicate %in% "Norm",]
+x$BioReplicate <- factor(x$BioReplicate)
+levels(x$BioReplicate)
+select <- levels(x$BioReplicate)
+
+#Create a new dataframe
+res.ls <- list()
+for(i in select){
+  res.ls[[i]] <- x[x$BioReplicate %in% i, c("Protein","abundance")]
+}
+names(res.ls) <- gsub(".+_","",names(res.ls))
+for(i in names(res.ls)) {
+  colnames(res.ls[[i]])[2] <- i 
+}
+
+head(res.ls)
+
+# Merge to intensity mtx
+myMerge <- function(df1,df2){merge(df1,df2, by="Protein", all = T)}
+intMtx_T3 <- Reduce(myMerge, res.ls)
+row.names(intMtx_T3) <- intMtx_T3$Protein
+intMtx_T3 <- intMtx_T3[,-1]
+head(intMtx_T3)
+
+intMtx3 <- na.omit(intMtx_T3)
+intMtx3 <- log(intMtx3)
+
+# use intMtx3 to create PCA ...
+############################
+library("pcaMethods")
+
+myPCA <- function(mtx, coldat, pcaM ="svd", top = 2000, title = "") {
+  if(nrow(mtx) < top){top <- nrow(mtx)}
+  message(paste0("Plotting PCA for Var.Top:\t",top))
+  
+  # Subsetting the top genes with max variance
+  Xvar <- apply(mtx,1,var)
+  X <- t(mtx[names(sort(Xvar, decreasing = T)[1:top]),])
+  
+  pc <- pcaMethods::pca(X, method = pcaM, center = T, nPcs=2)
+  pcaDf <- merge(coldat, scores(pc), by=0)
+  ggplot(pcaDf, aes(PC1, PC2, colour = Condition, shape = MSrun)) +
+    geom_point(size = 3, alpha = .65) +
+    ggtitle(paste0(title," - expl.Var[%]: ",round(pc@R2cum[2]*100,1)," - ",pcaM," - Top:",pc@nVar)) +
+    xlab(paste0("PC1: ",round((pc@R2)[1]*100,1),"% variance")) +
+    ylab(paste0("PC2: ",round((pc@R2)[2]*100,1),"% variance")) + #stat_ellipse() +
+    theme_bw() + theme(aspect.ratio = 1)
+}
+
+tmp <- data.frame(row.names = 1,
+                  ID = colnames(intMtx3),
+                  Condition = c("Control","LE","HE"),
+                  MSrun = as.character(c(1,1,1,2,2,2,3,3,3))
+)
+
+tmp$Condition <- factor(tmp$Condition, levels = c("Control","LE","HE"))
+
+mtx <- na.omit(intMtx3)
+myPCA(mtx = mtx,coldat = tmp, title = "T3 exposure to ZE")
+myPCA(mtx,tmp, top = 700)
+myPCA(mtx,tmp, top = 500, title = "T3 exposure to ZE")
+
+#################################################################
+############ Statistical modeling and testing ###################
+#################################################################
+?groupComparisonTMT
+
+# remove every row containig 'Norm' in BioReplicate column
+# remove every row containig 'Norm' in BioReplicate column
+df <- quant.msstats.mkuq_T3
+df <- df[!df$BioReplicate %in% "Norm",]
+head(df)
+
+MSmultiTest <- function(InputDf,anno,method, Substance){
+  if(missing(method)){method = 'BH'} # setting BH as default
+  if(missing(Substance)){'T3'}
+  
+  # organize input first - resort condition levels, put control FIRST position!
+  lev = levels(factor(anno$Condition))
+  anno$Condition = factor(anno$Condition, levels = c('Control',lev[!lev %in% 'Control']))
+  lev = levels(factor(anno$Condition)) #now the lev in the right order
+  lev = lev[!lev %in% "Norm"]
+  
+  #final output results list for the tests
+  res.ls <- list()
+  
+  # run loop for all treatment conditions
+  for (i in lev[2:length(lev)]){
+    # build compare matrix
+    mtx = matrix(nrow = 1, ncol = length(lev))
+    colnames(mtx) = lev
+    rownames(mtx) = i
+    mtx[1,] = ifelse(grepl(i,colnames(mtx)),1,0)
+    mtx[1,1] = -1 # done ;)
+    
+    # run test
+    res = groupComparisonTMT(data = InputDf, 
+                             contrast.matrix = mtx, 
+                             adj.method = method) # multiple comparison adjustment)
+    
+    # assing res to res.ls
+    name = paste(method,Substance,i, sep = '_')
+    name = gsub(' ','',name) #remove white space
+    res.ls[[paste0(name)]] <- res
+  }
+  # Return final output; Print res.ls
+  res.ls
+}
+
+RES <- MSmultiTest(InputDf = quant.msstats.mkuq_T3, anno = annotation_T3,
+                   Substance = 'T3')
+### export results
+# once you chose which res file you would like to export simply run
+dir.create('MSstatTMTMaq2')
+for(i in names(RES)){
+  write.csv(RES[[i]], file = paste0('./MSstatTMTMaq2/res_',i,'.csv'), row.names = F)
+}
+#Done
