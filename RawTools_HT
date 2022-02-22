@@ -1,4 +1,4 @@
-#  title: "RawTools quality control output analysis"
+### Title: "RawTools quality control output analysis"
 
 #install.packages("ggplot2")
 #install.packages("cowplot")
